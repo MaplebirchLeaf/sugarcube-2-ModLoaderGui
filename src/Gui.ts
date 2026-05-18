@@ -45,6 +45,16 @@ const nickName = (mi: ModInfo | undefined) => {
     return mi.nickName ? `<${s}> ` : '';
 };
 
+type DependenceInfoWithDownloadUrl = {
+    modName: string;
+    version: string;
+    downloadUrl?: string;
+};
+
+type ModBootJsonWithDownloadUrl = ModBootJson & {
+    dependenceInfo?: DependenceInfoWithDownloadUrl[];
+};
+
 export class Gui {
     // avoid same Math.random
     static rIdP = 0;
@@ -284,8 +294,7 @@ export class Gui {
                         }
                         try {
                             const R = await this.loadAndAddMod((vv as any));
-                            // this.gui!.fields['AddMod_R'].value = `Success. reload page to take effect`;
-                            this.gui!.fields['AddMod_R'].value = `Success. 刷新页面后生效`;
+                            this.gui!.fields['AddMod_R'].value = R;
                             this.gui!.fields['AddMod_R'].reload();
                             // console.log('this.gModUtils.getModLoadController().listModLocalStorage()', this.gModUtils.getModLoadController().listModLocalStorage());
                             // const MyConfig_field_NowSideLoadModeList_r = doc.querySelector('#MyConfig_field_NowSideLoadModeList_r');
@@ -719,6 +728,61 @@ export class Gui {
 
     protected startBanner?: HTMLDivElement;
 
+    protected matchVersion(version: string, range: string) {
+        const semVerTools = this.gModUtils.getSemVerTools();
+        return semVerTools.satisfies(
+            semVerTools.parseVersion(version).version,
+            semVerTools.parseRange(range),
+        );
+    }
+
+    protected async getInstalledModNameSet() {
+        return new Set([
+            ...await this.gModUtils.getModLoadController().listModIndexDB(),
+            ...await this.gModUtils.getModLoadController().loadHiddenModList(),
+        ]);
+    }
+
+    protected async needDownloadDep(d: DependenceInfoWithDownloadUrl, installedModNameSet: Set<string>) {
+        if (d.modName === 'ModLoader' || d.modName === 'GameVersion') return false;
+        const loadedMod = this.gModUtils.getAnyModByNameNoAlias(d.modName);
+        if (loadedMod) {
+            if (!this.matchVersion(loadedMod.bootJson.version, d.version)) throw new Error(`Dependency [${d.modName}] version mismatch. Required [${d.version}], loaded [${loadedMod.bootJson.version}].`,);
+            return false;
+        }
+        return !installedModNameSet.has(d.modName);
+    }
+
+    protected async fetchDep(d: DependenceInfoWithDownloadUrl) {
+        if (!d.downloadUrl) throw new Error(`Dependency [${d.modName}] is missing and downloadUrl is empty.`);
+        if (!this.thisWin.navigator.onLine) throw new Error(`Dependency [${d.modName}] is missing and browser is offline.`);
+        const res = await fetch(d.downloadUrl);
+        if (!res.ok) throw new Error(`Failed to download dependency [${d.modName}]: ${res.status} ${res.statusText}`);
+        return new Uint8Array(await res.arrayBuffer());
+    }
+
+    protected async addDep(d: DependenceInfoWithDownloadUrl) {
+        const u8Data = await this.fetchDep(d);
+        const bootJson: ModBootJson | string = await this.gModUtils.getModLoadController().checkModZipFileIndexDB(u8Data);
+        if (isString(bootJson)) throw new Error(`Invalid dependency [${d.modName}]: ${bootJson}`);
+        if (bootJson.name !== d.modName) throw new Error(`Dependency name mismatch. Required [${d.modName}], got [${bootJson.name}].`);
+        if (!this.matchVersion(bootJson.version, d.version)) throw new Error(`Dependency [${d.modName}] version mismatch. Required [${d.version}], got [${bootJson.version}].`,);
+        await this.gModUtils.getModLoadController().addModIndexDB(bootJson.name, u8Data);
+        return bootJson;
+    }
+
+    protected async addMissingDeps(bootJson: ModBootJsonWithDownloadUrl) {
+        const installedModNameSet = await this.getInstalledModNameSet();
+        const added: string[] = [];
+        for (const d of bootJson.dependenceInfo || []) {
+            if (!await this.needDownloadDep(d, installedModNameSet)) continue;
+            const depBootJson = await this.addDep(d);
+            installedModNameSet.add(depBootJson.name);
+            added.push(`${depBootJson.name}@${depBootJson.version}`);
+        }
+        return added;
+    }
+
     async loadAndAddMod(htmlFile: HTMLInputElement) {
         try {
             const f = htmlFile.files;
@@ -744,6 +808,7 @@ export class Gui {
             if (isString(zipFile)) {
                 return Promise.reject(`Error: ${zipFile}`);
             } else {
+                const addedDependenceModList = await this.addMissingDeps(zipFile as ModBootJsonWithDownloadUrl);
                 try {
                     await this.gModUtils.getModLoadController().addModIndexDB(zipFile.name, u8Data);
                 } catch (e) {
@@ -755,8 +820,9 @@ export class Gui {
                         console.error(e);
                     }
                 }
+                if (addedDependenceModList.length > 0) return `Success. 已下载依赖：${addedDependenceModList.join(', ')}。刷新页面后生效`;
             }
-            return `Success. reload page to take effect`;
+            return `Success. 刷新页面后生效`;
         } catch (E: any) {
             console.error('loadAndAddMod', E);
             const m = E?.message || E?.toString() || E;
