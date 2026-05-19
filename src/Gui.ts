@@ -874,11 +874,12 @@ export class Gui {
     }
 
     async listSideLoadModNameCanUnload() {
+        const readonlyModSet = new Set(await this.gModUtils.getModLoadController().loadReadonlyModList());
         const nameList = [
             ...await this.gModUtils.getModLoadController().listModIndexDB(),
             ...await this.gModUtils.getModLoadController().loadHiddenModList(),
         ];
-        return nameList;
+        return nameList.filter(T => !readonlyModSet.has(T));
     }
 
     // async listSideLoadModInfo(): Promise<{ name: string, mod: ModInfo, from: ModLoadFromSourceType }[]> {
