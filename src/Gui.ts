@@ -745,7 +745,7 @@ export class Gui {
 
     protected async needDownloadDep(d: DependenceInfoWithDownloadUrl, installedModNameSet: Set<string>) {
         if (d.modName === 'ModLoader' || d.modName === 'GameVersion') return false;
-        const loadedMod = this.gModUtils.getAnyModByNameNoAlias(d.modName);
+        const loadedMod = this.gModUtils.getMod(d.modName);
         if (loadedMod) {
             if (!this.matchVersion(loadedMod.bootJson.version, d.version)) throw new Error(`Dependency [${d.modName}] version mismatch. Required [${d.version}], loaded [${loadedMod.bootJson.version}].`,);
             return false;
@@ -756,16 +756,21 @@ export class Gui {
     protected async fetchDep(d: DependenceInfoWithDownloadUrl) {
         if (!d.downloadUrl) throw new Error(`Dependency [${d.modName}] is missing and downloadUrl is empty.`);
         if (!this.thisWin.navigator.onLine) throw new Error(`Dependency [${d.modName}] is missing and browser is offline.`);
-        const res = await fetch(d.downloadUrl);
-        if (!res.ok) throw new Error(`Failed to download dependency [${d.modName}]: ${res.status} ${res.statusText}`);
-        return new Uint8Array(await res.arrayBuffer());
+        try {
+            const res = await fetch(d.downloadUrl);
+            if (!res.ok) throw new Error(`Failed to download dependency [${d.modName}]: ${res.status} ${res.statusText}`);
+            return new Uint8Array(await res.arrayBuffer());
+        } catch {
+            window.open(d.downloadUrl, "_blank");
+            throw new Error(`无法自动下载依赖 ${d.modName}，请手动下载并安装。`);
+        }
     }
 
     protected async addDep(d: DependenceInfoWithDownloadUrl) {
         const u8Data = await this.fetchDep(d);
         const bootJson: ModBootJson | string = await this.gModUtils.getModLoadController().checkModZipFileIndexDB(u8Data);
         if (isString(bootJson)) throw new Error(`Invalid dependency [${d.modName}]: ${bootJson}`);
-        if (bootJson.name !== d.modName) throw new Error(`Dependency name mismatch. Required [${d.modName}], got [${bootJson.name}].`);
+        if (bootJson.name !== d.modName && !bootJson.alias?.includes(d.modName)) throw new Error(`Dependency name mismatch. Required [${d.modName}], got [${bootJson.name}].`);
         if (!this.matchVersion(bootJson.version, d.version)) throw new Error(`Dependency [${d.modName}] version mismatch. Required [${d.version}], got [${bootJson.version}].`,);
         await this.gModUtils.getModLoadController().addModIndexDB(bootJson.name, u8Data);
         return bootJson;
@@ -778,7 +783,7 @@ export class Gui {
             if (!await this.needDownloadDep(d, installedModNameSet)) continue;
             const depBootJson = await this.addDep(d);
             installedModNameSet.add(depBootJson.name);
-            added.push(`${depBootJson.name}@${depBootJson.version}`);
+            added.push(`[${depBootJson.name}@${depBootJson.version}]`);
         }
         return added;
     }
