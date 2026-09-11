@@ -55,6 +55,34 @@ type ModBootJsonWithDownloadUrl = ModBootJson & {
     dependenceInfo?: DependenceInfoWithDownloadUrl[];
 };
 
+type DependencyProxyWindow = Window & {
+    modDependencyProxyUrl?: string;
+};
+
+function dependencyDownloadUrl(downloadUrl: string, proxyBaseUrl?: string): string {
+    if (!proxyBaseUrl?.trim()) return downloadUrl;
+
+    let url: URL;
+    try {
+        url = new URL(downloadUrl);
+    } catch {
+        return downloadUrl;
+    }
+
+    if (url.protocol !== 'https:' || url.hostname !== 'github.com') return downloadUrl;
+    let parts: string[];
+    try {
+        parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+    } catch {
+        return downloadUrl;
+    }
+    if (parts.length !== 6 || parts[2] !== 'releases' || parts[3] !== 'download') return downloadUrl;
+    if (!parts[5].toLowerCase().endsWith('.mod.zip')) return downloadUrl;
+
+    const proxyPath = [parts[0], parts[1], parts[4], parts[5]].map(encodeURIComponent).join('/');
+    return new URL(proxyPath, proxyBaseUrl).toString();
+}
+
 export class Gui {
     // avoid same Math.random
     static rIdP = 0;
@@ -753,21 +781,18 @@ export class Gui {
         return !installedModNameSet.has(d.modName);
     }
 
-    protected async fetchDep(d: DependenceInfoWithDownloadUrl) {
+    protected async fetchDependencyArchive(d: DependenceInfoWithDownloadUrl) {
         if (!d.downloadUrl) throw new Error(`Dependency [${d.modName}] is missing and downloadUrl is empty.`);
         if (!this.thisWin.navigator.onLine) throw new Error(`Dependency [${d.modName}] is missing and browser is offline.`);
-        try {
-            const res = await fetch(d.downloadUrl);
-            if (!res.ok) throw new Error(`Failed to download dependency [${d.modName}]: ${res.status} ${res.statusText}`);
-            return new Uint8Array(await res.arrayBuffer());
-        } catch {
-            window.open(d.downloadUrl, "_blank");
-            throw new Error(`无法自动下载依赖 ${d.modName}，请手动下载并安装。`);
-        }
+        const proxyBaseUrl = (this.thisWin as DependencyProxyWindow).modDependencyProxyUrl;
+        const url = dependencyDownloadUrl(d.downloadUrl, proxyBaseUrl);
+        const response = await this.thisWin.fetch(url);
+        if (!response.ok) throw new Error(`Failed to download dependency [${d.modName}]: ${response.status} ${response.statusText}`);
+        return new Uint8Array(await response.arrayBuffer());
     }
 
-    protected async addDep(d: DependenceInfoWithDownloadUrl) {
-        const u8Data = await this.fetchDep(d);
+    protected async installDependency(d: DependenceInfoWithDownloadUrl) {
+        const u8Data = await this.fetchDependencyArchive(d);
         const bootJson: ModBootJson | string = await this.gModUtils.getModLoadController().checkModZipFileIndexDB(u8Data);
         if (isString(bootJson)) throw new Error(`Invalid dependency [${d.modName}]: ${bootJson}`);
         if (bootJson.name !== d.modName && !bootJson.alias?.includes(d.modName)) throw new Error(`Dependency name mismatch. Required [${d.modName}], got [${bootJson.name}].`);
@@ -781,7 +806,7 @@ export class Gui {
         const added: string[] = [];
         for (const d of bootJson.dependenceInfo || []) {
             if (!await this.needDownloadDep(d, installedModNameSet)) continue;
-            const depBootJson = await this.addDep(d);
+            const depBootJson = await this.installDependency(d);
             installedModNameSet.add(depBootJson.name);
             added.push(`[${depBootJson.name}@${depBootJson.version}]`);
         }
@@ -1042,4 +1067,3 @@ export class Gui {
     }
 
 }
-
