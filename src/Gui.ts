@@ -55,10 +55,6 @@ type ModBootJsonWithDownloadUrl = ModBootJson & {
     dependenceInfo?: DependenceInfoWithDownloadUrl[];
 };
 
-type DependencyProxyWindow = Window & {
-    modDependencyProxyUrl?: string;
-};
-
 function dependencyDownloadUrl(downloadUrl: string, proxyBaseUrl?: string): string {
     if (!proxyBaseUrl?.trim()) return downloadUrl;
 
@@ -784,7 +780,7 @@ export class Gui {
     protected async fetchDependencyArchive(d: DependenceInfoWithDownloadUrl) {
         if (!d.downloadUrl) throw new Error(`Dependency [${d.modName}] is missing and downloadUrl is empty.`);
         if (!this.thisWin.navigator.onLine) throw new Error(`Dependency [${d.modName}] is missing and browser is offline.`);
-        const proxyBaseUrl = (this.thisWin as DependencyProxyWindow).modDependencyProxyUrl;
+        const proxyBaseUrl = this.thisWin.document.querySelector<HTMLMetaElement>('meta[name="thalia-mod-dependency-proxy"]')?.content;
         const url = dependencyDownloadUrl(d.downloadUrl, proxyBaseUrl);
         const response = await this.thisWin.fetch(url);
         if (!response.ok) throw new Error(`Failed to download dependency [${d.modName}]: ${response.status} ${response.statusText}`);
