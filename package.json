@@ -26,6 +26,7 @@
     "@webpack-cli/generators": "^3.0.7",
     "bootstrap": "^5.3.1",
     "css-loader": "^6.8.1",
+    "fake-indexeddb": "^6.2.5",
     "fork-ts-checker-webpack-plugin": "^8.0.0",
     "html-webpack-plugin": "^5.5.3",
     "nodemon": "^3.0.1",

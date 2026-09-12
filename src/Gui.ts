@@ -866,9 +866,12 @@ export class Gui {
             },
         }, {signal});
         try {
-            const data = new Uint8Array(await file.arrayBuffer());
+            // Keep the selected File as a Blob handle. The parsing helper's byte buffer dies
+            // before recursive dependency planning starts.
+            const inspectFile = async () => inspect(new Uint8Array(await file.arrayBuffer()));
+            const manifest = await inspectFile();
             checkAborted(signal);
-            await installer.install(await inspect(data), data);
+            await installer.install(manifest, file);
             return `${StringTable.InstallSuccess} ${installer.added.join(', ')}`;
         } catch (error) {
             const message = signal.aborted ? StringTable.InstallCancelled : error instanceof Error ? error.message : String(error);

@@ -1,8 +1,14 @@
-import {describe, expect, test} from 'bun:test';
+import {afterEach, describe, expect, test} from 'bun:test';
+import 'fake-indexeddb/auto';
 import {DependencyInstaller, DependencyManifest, DependencyStore} from '../src/DependencyInstaller';
 import {MAX_ARCHIVE_BYTES, readArchive} from '../src/Download';
 
+afterEach(async () => {
+    expect((await indexedDB.databases()).filter(database => database.name?.startsWith('thalia-mod-install-'))).toEqual([]);
+});
+
 const data = new Uint8Array([1]);
+const rootFile = new Blob([data]);
 function manifest(name: string, dependencies: string[] = [], version = '1'): DependencyManifest {
     return {name, version, dependenceInfo: dependencies.map(modName => ({modName, version: '1', downloadUrl: modName}))};
 }
@@ -28,14 +34,14 @@ describe('dependency installation', () => {
     test('installs transitive dependencies before parents and downloads shared aliases once', async () => {
         const shared = {...manifest('shared'), alias: ['shared-alias']};
         const {store, saved, requested} = fixture([manifest('B', ['shared']), manifest('C', ['shared-alias']), shared]);
-        await new DependencyInstaller(store).install(manifest('A', ['B', 'C']), data);
+        await new DependencyInstaller(store).install(manifest('A', ['B', 'C']), rootFile);
         expect(saved).toEqual(['shared', 'B', 'C', 'A']);
         expect(requested).toEqual(['B', 'shared', 'C']);
     });
 
     test('rejects circular dependencies without writing the cycle', async () => {
         const {store, saved} = fixture([manifest('B', ['A'])]);
-        await expect(new DependencyInstaller(store).install(manifest('A', ['B']), data)).rejects.toThrow('Circular dependency: A -> B -> A');
+        await expect(new DependencyInstaller(store).install(manifest('A', ['B']), rootFile)).rejects.toThrow('Circular dependency: A -> B -> A');
         expect(saved).toEqual([]);
     });
 
@@ -43,17 +49,17 @@ describe('dependency installation', () => {
         const b = manifest('B', ['C']);
         b.dependenceInfo![0].downloadUrl = 'B';
         const {store, saved, requested} = fixture([b]);
-        await expect(new DependencyInstaller(store).install(manifest('A', ['B']), data)).rejects.toThrow('Dependency name mismatch');
+        await expect(new DependencyInstaller(store).install(manifest('A', ['B']), rootFile)).rejects.toThrow('Dependency name mismatch');
         expect(saved).toEqual([]);
         expect(requested).toEqual(['B']);
     });
 
     test('validates persisted versions and respects disabled aliases without downloading', async () => {
         const old = fixture([], [{manifest: manifest('B', [], '0')}]);
-        await expect(new DependencyInstaller(old.store).install(manifest('A', ['B']), data)).rejects.toThrow('version mismatch');
+        await expect(new DependencyInstaller(old.store).install(manifest('A', ['B']), rootFile)).rejects.toThrow('version mismatch');
         expect(old.requested).toEqual([]);
         const disabled = fixture([], [{manifest: {...manifest('B'), alias: ['alias']}, disabled: true}]);
-        await expect(new DependencyInstaller(disabled.store).install(manifest('A', ['alias']), data)).rejects.toThrow('is disabled');
+        await expect(new DependencyInstaller(disabled.store).install(manifest('A', ['alias']), rootFile)).rejects.toThrow('is disabled');
         expect(disabled.requested).toEqual([]);
     });
 
@@ -61,7 +67,7 @@ describe('dependency installation', () => {
         const {store} = fixture([manifest('B')]);
         store.save = async mod => { if (mod.name === 'A') throw new Error('Quota exceeded'); };
         const installer = new DependencyInstaller(store);
-        await expect(installer.install(manifest('A', ['B']), data)).rejects.toThrow('Quota exceeded');
+        await expect(installer.install(manifest('A', ['B']), rootFile)).rejects.toThrow('Quota exceeded');
         expect(installer.added).toEqual(['B@1']);
     });
 
@@ -69,13 +75,13 @@ describe('dependency installation', () => {
         const {store, saved} = fixture([manifest('B')]);
         const abort = new AbortController();
         store.download = async () => { abort.abort(); return new Uint8Array([0]); };
-        await expect(new DependencyInstaller(store, {signal: abort.signal}).install(manifest('A', ['B']), data)).rejects.toThrow('cancelled');
+        await expect(new DependencyInstaller(store, {signal: abort.signal}).install(manifest('A', ['B']), rootFile)).rejects.toThrow('cancelled');
         expect(saved).toEqual([]);
     });
 
     test('checks requirements of already stored but not loaded dependencies', async () => {
         const {store, saved} = fixture([manifest('C')], [{manifest: manifest('B', ['C'])}]);
-        await new DependencyInstaller(store).install(manifest('A', ['B']), data);
+        await new DependencyInstaller(store).install(manifest('A', ['B']), rootFile);
         expect(saved).toEqual(['C', 'A']);
     });
 });

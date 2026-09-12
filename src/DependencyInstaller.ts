@@ -1,3 +1,5 @@
+import {InstallArchives} from './InstallArchives';
+
 export interface Dependency {
     modName: string;
     version: string;
@@ -37,16 +39,62 @@ export class DependencyInstaller<T extends DependencyManifest> {
     private readonly visiting = new Set<string>();
     private readonly complete = new Set<string>();
     private readonly downloads = new Map<string, T>();
+    private readonly pending: {manifest: T; archive: number}[] = [];
 
-    constructor(private readonly store: DependencyStore<T>, private readonly options: DownloadOptions = {}) {}
+    constructor(
+        private readonly store: DependencyStore<T>,
+        private readonly options: DownloadOptions = {},
+        private readonly archives = new InstallArchives(),
+    ) {}
 
-    async install(manifest: T, data: Uint8Array): Promise<void> {
-        for (const stored of await this.store.list()) {
+    async install(manifest: T, file: Blob): Promise<void> {
+        let failed = false;
+        try {
+            await this.archives.open();
+            for (const stored of await this.store.list()) {
+                checkAborted(this.options.signal);
+                const metadata = await this.store.metadata(stored.name);
+                if (metadata) this.remember(metadata, stored.disabled);
+            }
             checkAborted(this.options.signal);
-            const metadata = await this.store.metadata(stored.name);
-            if (metadata) this.remember(metadata, stored.disabled);
+            await this.visit(manifest, await this.archives.put(file));
+            // Only a complete, validated graph is made visible to the loader. Each save owns
+            // one archive buffer, released before reading the next staged Blob.
+            for (const pending of this.pending) await this.saveArchive(pending.manifest, pending.archive);
+        } catch (error) {
+            failed = true;
+            throw error;
+        } finally {
+            this.pending.length = 0;
+            try {
+                await this.archives.close();
+            } catch (error) {
+                if (!failed) throw error;
+                console.warn('Temporary archive cleanup will be retried on the next installation.', error);
+            }
         }
-        await this.visit(manifest, data);
+    }
+
+    private async saveArchive(manifest: T, archive: number): Promise<void> {
+        checkAborted(this.options.signal);
+        const file = await this.archives.get(archive);
+        checkAborted(this.options.signal);
+        const data = new Uint8Array(await file.arrayBuffer());
+        checkAborted(this.options.signal);
+        await this.store.save(manifest, data);
+        this.added.push(`${manifest.name}@${manifest.version}`);
+        await this.archives.remove(archive);
+    }
+
+    private async downloadArchive(dependency: Dependency): Promise<{manifest: T; archive: number}> {
+        const data = await this.store.download(dependency, this.options);
+        checkAborted(this.options.signal);
+        const manifest = await this.store.inspect(data);
+        this.validate(dependency, manifest);
+        checkAborted(this.options.signal);
+        const archive = await this.archives.put(new Blob([data]));
+        checkAborted(this.options.signal);
+        return {manifest, archive};
     }
 
     private remember(manifest: T, disabled = false): void {
@@ -80,29 +128,23 @@ export class DependencyInstaller<T extends DependencyManifest> {
             await this.visit(cached);
             return;
         }
-        const data = await this.store.download(dependency, this.options);
-        checkAborted(this.options.signal);
-        const downloaded = await this.store.inspect(data);
-        this.validate(dependency, downloaded);
+        const downloaded = await this.downloadArchive(dependency);
         // Cache metadata before traversing children: a malformed shared URL must not await itself.
-        this.downloads.set(dependency.downloadUrl, downloaded);
-        await this.visit(downloaded, data);
+        this.downloads.set(dependency.downloadUrl, downloaded.manifest);
+        await this.visit(downloaded.manifest, downloaded.archive);
     }
 
-    private async visit(manifest: T, data?: Uint8Array): Promise<void> {
+    private async visit(manifest: T, archive?: number): Promise<void> {
         checkAborted(this.options.signal);
         if (this.visiting.has(manifest.name)) throw new Error(`Circular dependency: ${[...this.visiting, manifest.name].join(' -> ')}`);
-        if (this.complete.has(manifest.name) && !data) return;
+        if (this.complete.has(manifest.name) && archive === undefined) return;
         if (this.visiting.size >= 64) throw new Error('Dependency nesting exceeds 64 mods.');
         this.visiting.add(manifest.name);
         this.remember(manifest);
         try {
             for (const dependency of manifest.dependenceInfo || []) await this.dependency(dependency);
             checkAborted(this.options.signal);
-            if (data) {
-                await this.store.save(manifest, data);
-                this.added.push(`${manifest.name}@${manifest.version}`);
-            }
+            if (archive !== undefined) this.pending.push({manifest, archive});
             this.complete.add(manifest.name);
         } finally {
             this.visiting.delete(manifest.name);
