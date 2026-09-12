@@ -49,17 +49,20 @@ export class LoadingProgress implements LifeTimeCircleHook {
         this.logNode = document.createElement('div');
         this.logNode.id = 'LoadingProgressLog';
         this.logNode.innerText = '';
-        this.logNode.style.cssText = 'position: fixed;left: 1px;bottom: calc(1px + 3em);' +
-            'font-size: .75em;z-index: 500001;user-select: none;' +
+        this.logNode.style.cssText = 'position: fixed;top: 1px;right: 1px;left: 1px;bottom: calc(1px + 3em);' +
+            'font-size: .75em;line-height: 1.25;z-index: 500001;user-select: none;' +
             'border: gray dashed 2px;color: gray;padding: .25em;' +
-            'pointer-events: none;';
+            'box-sizing: border-box;display: flex;flex-direction: column;justify-content: flex-end;' +
+            'overflow: hidden;pointer-events: none;';
         document.body.appendChild(this.logNode);
+        document.defaultView?.addEventListener('resize', this.onResize);
     }
 
     logNode?: HTMLDivElement;
 
     allStart() {
         this.overlayVisible = false;
+        document.defaultView?.removeEventListener('resize', this.onResize);
         if (this.flushTimer !== undefined) clearTimeout(this.flushTimer);
         this.flushTimer = undefined;
         if (this.logNode) {
@@ -75,6 +78,7 @@ export class LoadingProgress implements LifeTimeCircleHook {
     private droppedRecords = 0;
     private overlayVisible = true;
     private flushTimer?: ReturnType<typeof setTimeout>;
+    private readonly onResize = () => this.requestOverlayUpdate();
     private readonly counts = {error: 0, warning: 0, info: 0};
 
     private record(item: LogItem): void {
@@ -84,11 +88,24 @@ export class LoadingProgress implements LifeTimeCircleHook {
             this.logList.splice(0, this.logList.length - LoadingProgress.maxRecords);
             ++this.droppedRecords;
         }
+        this.requestOverlayUpdate();
+    }
+
+    private requestOverlayUpdate(): void {
         if (!this.overlayVisible || this.flushTimer !== undefined) return;
         this.flushTimer = setTimeout(() => {
             this.flushTimer = undefined;
             if (this.overlayVisible && this.logNode) {
-                this.logNode.replaceChildren(...this.logList.slice(-30).map(item => this.LogItem2Node(item)));
+                const style = document.defaultView?.getComputedStyle(this.logNode);
+                const lineHeight = parseFloat(style?.lineHeight || '') || 16;
+                const height = this.logNode.clientHeight - (parseFloat(style?.paddingTop || '') || 0) - (parseFloat(style?.paddingBottom || '') || 0);
+                const rows = Math.min(LoadingProgress.maxVisibleRecords, Math.max(1, Math.floor(height / lineHeight)));
+                // Keep only the rows that fit this screen; full messages remain in the history.
+                this.logNode.replaceChildren(...this.logList.slice(-rows).map(item => {
+                    const node = this.LogItem2Node(item);
+                    node.style.cssText += 'flex-shrink: 0;white-space: nowrap;overflow: hidden;text-overflow: ellipsis;';
+                    return node;
+                }));
             }
         }, 100);
     }
