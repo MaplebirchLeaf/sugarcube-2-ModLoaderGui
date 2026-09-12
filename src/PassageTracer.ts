@@ -1,51 +1,21 @@
-type whenPassageCome = (passageName: string) => void;
+type PassageCallback = (passageName: string) => void;
 
 export class PassageTracer {
-    constructor(
-        public thisW: Window,
-    ) {
-        console.log('PassageTracer() this.thisW.jQuery', this.thisW.jQuery);
-        console.log('PassageTracer() this.thisW.jQuery(document)', this.thisW.jQuery(document));
-        this.thisW.jQuery(document).on(":passageend", () => {
-            this.newPassageCome();
+    private readonly callbacks = new Set<PassageCallback>();
+
+    constructor(public thisW: Window) {
+        this.thisW.jQuery(this.thisW.document).on(':passageend', (event: JQuery.TriggeredEvent) => {
+            const passage = (event as JQuery.TriggeredEvent & {passage?: {title?: string}}).passage;
+            this.newPassageCome(passage?.title);
         });
     }
 
-    private whenPassageComeCallback: whenPassageCome[] = [];
+    addCallback(callback: PassageCallback) { this.callbacks.add(callback); }
+    removeCallback(callback: PassageCallback) { this.callbacks.delete(callback); }
 
-    addCallback(cb: whenPassageCome) {
-        this.whenPassageComeCallback.push(cb);
+    newPassageCome(passageName?: string) {
+        const name = passageName || this.thisW.document.querySelector('.passage[data-passage]')?.getAttribute('data-passage');
+        if (!name) return;
+        for (const callback of this.callbacks) callback(name);
     }
-
-    newPassageCome() {
-        const pe = Array.from(document.getElementsByClassName('passage'));
-        // console.log('newPassageCome() pe', pe);
-        // console.log('newPassageCome() pe', document.getElementsByClassName('passage'));
-        if (pe.length !== 1) {
-            console.log('newPassageCome() (pe.length !== 0)', pe);
-            return;
-        }
-        const p: HTMLDivElement = pe[0] as HTMLDivElement;
-        const dpName = p.getAttribute('data-passage');
-        if (!dpName) {
-            console.log('newPassageCome() (!dpName)', p);
-            return;
-        }
-        console.log('newPassageCome() dpName', dpName);
-        // switch (dpName) {
-        //     case 'Stall Sell':
-        //         // the sell event
-        //         console.log('newPassageCome() Stall Sell');
-        //         break;
-        //     case 'Stall Attention':
-        //         break;
-        //     default:
-        //         break;
-        // }
-        for (let i = 0; i < this.whenPassageComeCallback.length; i++) {
-            const cb = this.whenPassageComeCallback[i];
-            cb(dpName);
-        }
-    }
-
 }

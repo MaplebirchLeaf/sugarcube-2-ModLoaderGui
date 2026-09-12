@@ -16,7 +16,8 @@ import {ModLoadSwitch} from "./ModLoadSwitch";
 import {KeyFilter} from "./KeyFilter";
 import {ModSubUiAngularJsService} from "./ModSubUiAngularJsService";
 import {ModManagerSubUi} from "./ModManagerSubUi";
-import uint8ToBase64 from 'uint8-to-base64';
+import {checkAborted, Dependency, DependencyInstaller, DownloadOptions} from './DependencyInstaller';
+import {MAX_ARCHIVE_BYTES, readArchive} from './Download';
 
 const btnType: BootstrapBtnType = 'secondary';
 
@@ -45,18 +46,8 @@ const nickName = (mi: ModInfo | undefined) => {
     return mi.nickName ? `<${s}> ` : '';
 };
 
-type DependenceInfoWithDownloadUrl = {
-    modName: string;
-    version: string;
-    downloadUrl?: string;
-};
-
-type ModBootJsonWithDownloadUrl = ModBootJson & {
-    dependenceInfo?: DependenceInfoWithDownloadUrl[];
-};
-
 type NativeDownload = {
-    download(url: string): Promise<ArrayBuffer>;
+    download(url: string, options?: DownloadOptions): Promise<ArrayBuffer>;
 };
 
 type CordovaRuntime = {
@@ -158,7 +149,16 @@ export class Gui {
         noInfo: false, noWarning: false, noError: false,
     };
 
-    async createGui() {
+    private guiOpening?: Promise<void>;
+
+    createGui(): Promise<void> {
+        if (!this.guiOpening) {
+            this.guiOpening = this.buildGui().finally(() => { this.guiOpening = undefined; });
+        }
+        return this.guiOpening;
+    }
+
+    private async buildGui() {
         if (!this.rootNode) {
             this.rootNode = document.createElement('div');
             // this.rootNode.id = 'rootNodeModLoaderGui';
@@ -309,7 +309,8 @@ export class Gui {
                     label: StringTable.AddMod,
                     type: 'button',
                     click: async () => {
-                        this.gui!.fields['AddMod_R'].value = 'Loading...';
+                        if (this.installation) return;
+                        this.gui!.fields['AddMod_R'].value = StringTable.Installing;
                         this.gui!.fields['AddMod_R'].reload();
                         const vv = this.gui!.fields['AddMod_I'].toValue();
                         if (isNil(vv)) {
@@ -360,6 +361,13 @@ export class Gui {
                         }
                     },
                     // cssStyleText: 'display: inline-block;',
+                    cssClassName: 'd-inline',
+                    xgmExtendField: {bootstrap: {btnType: btnType}},
+                },
+                'CancelInstall_b': {
+                    label: StringTable.CancelInstall,
+                    type: 'button',
+                    click: () => this.installationAbort?.abort(),
                     cssClassName: 'd-inline',
                     xgmExtendField: {bootstrap: {btnType: btnType}},
                 },
@@ -768,107 +776,104 @@ export class Gui {
         );
     }
 
-    protected async getInstalledModNameSet() {
-        return new Set([
-            ...await this.gModUtils.getModLoadController().listModIndexDB(),
-            ...await this.gModUtils.getModLoadController().loadHiddenModList(),
-        ]);
+    private installation?: Promise<string>;
+    private installationAbort?: AbortController;
+
+    private showInstallProgress(message: string) {
+        const field = this.gui?.fields['AddMod_R'];
+        if (!field) return;
+        field.value = message;
+        if (this.gui?.isOpen) field.reload();
     }
 
-    protected async needDownloadDep(d: DependenceInfoWithDownloadUrl, installedModNameSet: Set<string>) {
-        if (d.modName === 'ModLoader' || d.modName === 'GameVersion') return false;
-        const loadedMod = this.gModUtils.getMod(d.modName);
-        if (loadedMod) {
-            if (!this.matchVersion(loadedMod.bootJson.version, d.version)) throw new Error(`Dependency [${d.modName}] version mismatch. Required [${d.version}], loaded [${loadedMod.bootJson.version}].`,);
-            return false;
-        }
-        return !installedModNameSet.has(d.modName);
-    }
-
-    protected async fetchDependencyArchive(d: DependenceInfoWithDownloadUrl) {
-        if (!d.downloadUrl) throw new Error(`Dependency [${d.modName}] is missing and downloadUrl is empty.`);
-        if (!this.thisWin.navigator.onLine) throw new Error(`Dependency [${d.modName}] is missing and browser is offline.`);
-        const transport = this.thisWin.document.querySelector<HTMLMetaElement>('meta[name="thalia-mod-download-transport"]')?.content;
-        if (transport === 'native') {
-            const cordova = (this.thisWin as Window & {cordova?: CordovaRuntime}).cordova;
-            if (!cordova) throw new Error(`Native downloader is unavailable for dependency [${d.modName}].`);
-            const downloader = cordova.require('thalia-native-download.NativeDownload') as NativeDownload;
-            return new Uint8Array(await downloader.download(d.downloadUrl));
-        }
-        const proxyBaseUrl = this.thisWin.document.querySelector<HTMLMetaElement>('meta[name="thalia-mod-dependency-proxy"]')?.content;
-        const url = dependencyDownloadUrl(d.downloadUrl, proxyBaseUrl);
-        const response = await this.thisWin.fetch(url);
-        if (!response.ok) throw new Error(`Failed to download dependency [${d.modName}]: ${response.status} ${response.statusText}`);
-        return new Uint8Array(await response.arrayBuffer());
-    }
-
-    protected async installDependency(d: DependenceInfoWithDownloadUrl) {
-        const u8Data = await this.fetchDependencyArchive(d);
-        const bootJson: ModBootJson | string = await this.gModUtils.getModLoadController().checkModZipFileIndexDB(u8Data);
-        if (isString(bootJson)) throw new Error(`Invalid dependency [${d.modName}]: ${bootJson}`);
-        if (bootJson.name !== d.modName && !bootJson.alias?.includes(d.modName)) throw new Error(`Dependency name mismatch. Required [${d.modName}], got [${bootJson.name}].`);
-        if (!this.matchVersion(bootJson.version, d.version)) throw new Error(`Dependency [${d.modName}] version mismatch. Required [${d.version}], got [${bootJson.version}].`,);
-        await this.gModUtils.getModLoadController().addModIndexDB(bootJson.name, u8Data);
-        return bootJson;
-    }
-
-    protected async addMissingDeps(bootJson: ModBootJsonWithDownloadUrl) {
-        const installedModNameSet = await this.getInstalledModNameSet();
-        const added: string[] = [];
-        for (const d of bootJson.dependenceInfo || []) {
-            if (!await this.needDownloadDep(d, installedModNameSet)) continue;
-            const depBootJson = await this.installDependency(d);
-            installedModNameSet.add(depBootJson.name);
-            added.push(`[${depBootJson.name}@${depBootJson.version}]`);
-        }
-        return added;
-    }
-
-    async loadAndAddMod(htmlFile: HTMLInputElement) {
+    protected async fetchDependencyArchive(dependency: Dependency, options: DownloadOptions) {
+        if (!dependency.downloadUrl) throw new Error(`Dependency [${dependency.modName}] is missing and downloadUrl is empty.`);
+        checkAborted(options.signal);
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        options.signal?.addEventListener('abort', abort, {once: true});
+        const timeout = setTimeout(abort, 120000);
+        let lastProgress = 0;
+        const downloadOptions: DownloadOptions = {
+            signal: controller.signal,
+            onProgress: (loaded, total) => {
+                options.onProgress?.(loaded, total);
+                const now = Date.now();
+                if (now - lastProgress < 200 && loaded !== total) return;
+                lastProgress = now;
+                const size = `${(loaded / 1048576).toFixed(1)} MiB`;
+                this.showInstallProgress(`${StringTable.Downloading} ${dependency.modName}: ${total ? `${Math.round(loaded / total * 100)}% (${size})` : size}`);
+            },
+        };
+        this.showInstallProgress(`${StringTable.Downloading} ${dependency.modName}…`);
         try {
-            const f = htmlFile.files;
-            console.log('f', f);
-            if (!(f && f.length === 1)) {
-                console.error('loadAndAddMod() (!(f && f.length === 1))');
-                return Promise.reject(`Error: ${StringTable.InvalidFile}`);
+            const transport = this.thisWin.document.querySelector<HTMLMetaElement>('meta[name="thalia-mod-download-transport"]')?.content;
+            if (transport === 'native') {
+                const cordova = (this.thisWin as Window & {cordova?: CordovaRuntime}).cordova;
+                if (!cordova) throw new Error(`Native downloader is unavailable for dependency [${dependency.modName}].`);
+                const downloader = cordova.require('thalia-native-download.NativeDownload') as NativeDownload;
+                return new Uint8Array(await downloader.download(dependency.downloadUrl, downloadOptions));
             }
-            const file = f[0];
-            const data: ArrayBuffer = await new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.readAsArrayBuffer(file);
-                reader.onload = function (e) {
-                    resolve(e.target?.result as ArrayBuffer);
-                };
-                reader.onerror = function (e) {
-                    reject(e);
-                }
-            });
-            // console.log('data', data);
-            const u8Data = new Uint8Array(data);
-            const zipFile: ModBootJson | string = await this.gModUtils.getModLoadController().checkModZipFileIndexDB(u8Data);
-            if (isString(zipFile)) {
-                return Promise.reject(`Error: ${zipFile}`);
-            } else {
-                const addedDependenceModList = await this.addMissingDeps(zipFile as ModBootJsonWithDownloadUrl);
-                try {
-                    await this.gModUtils.getModLoadController().addModIndexDB(zipFile.name, u8Data);
-                } catch (e) {
-                    console.error(e);
-                    try {
-                        const base64 = uint8ToBase64.encode(u8Data);
-                        this.gModUtils.getModLoadController().addModLocalStorage(zipFile.name, base64);
-                    } catch (e) {
-                        console.error(e);
-                    }
-                }
-                if (addedDependenceModList.length > 0) return `Success. 已下载依赖：${addedDependenceModList.join(', ')}。刷新页面后生效`;
-            }
-            return `Success. 刷新页面后生效`;
-        } catch (E: any) {
-            console.error('loadAndAddMod', E);
-            const m = E?.message || E?.toString() || E;
-            // return `Error: ${m}}`
-            return Promise.reject(E);
+            const proxyBaseUrl = this.thisWin.document.querySelector<HTMLMetaElement>('meta[name="thalia-mod-dependency-proxy"]')?.content;
+            const response = await this.thisWin.fetch(dependencyDownloadUrl(dependency.downloadUrl, proxyBaseUrl), {signal: controller.signal});
+            return await readArchive(response, downloadOptions);
+        } catch (error) {
+            if (controller.signal.aborted && !options.signal?.aborted) throw new Error(`Download timed out for [${dependency.modName}].`);
+            throw error;
+        } finally {
+            clearTimeout(timeout);
+            options.signal?.removeEventListener('abort', abort);
+        }
+    }
+
+    loadAndAddMod(htmlFile: HTMLInputElement): Promise<string> {
+        if (this.installation) return this.installation;
+        this.installationAbort = new AbortController();
+        this.installation = this.installFile(htmlFile, this.installationAbort.signal).finally(() => {
+            this.installation = undefined;
+            this.installationAbort = undefined;
+        });
+        return this.installation;
+    }
+
+    private async installFile(htmlFile: HTMLInputElement, signal: AbortSignal): Promise<string> {
+        const file = htmlFile.files?.length === 1 ? htmlFile.files[0] : undefined;
+        if (!file) throw new Error(StringTable.InvalidFile);
+        if (file.size > MAX_ARCHIVE_BYTES) throw new Error('Mod archive exceeds 128 MiB.');
+        const controller = this.gModUtils.getModLoadController();
+        if (typeof controller.getStoredModInfoIndexDB !== 'function') {
+            throw new Error('Update ModLoader to a Thalia build with stored mod metadata support before installing.');
+        }
+        const inspect = async (data: Uint8Array): Promise<ModBootJson> => {
+            const manifest = await controller.checkModZipFileIndexDB(data);
+            if (typeof manifest === 'string') throw new Error(manifest);
+            return manifest;
+        };
+        const installer = new DependencyInstaller<ModBootJson>({
+            list: async () => {
+                const [enabled, disabled] = await Promise.all([controller.listModIndexDB(), controller.loadHiddenModList()]);
+                const hidden = new Set(disabled);
+                return [...new Set([...enabled, ...disabled])].map(name => ({name, disabled: hidden.has(name)}));
+            },
+            metadata: name => controller.getStoredModInfoIndexDB(name),
+            loaded: name => this.gModUtils.getMod(name)?.bootJson,
+            matches: (version, range) => this.matchVersion(version, range),
+            download: (dependency, options) => this.fetchDependencyArchive(dependency, options),
+            inspect,
+            save: async (manifest, data) => {
+                this.showInstallProgress(`${StringTable.Saving} ${manifest.name}…`);
+                await controller.addModIndexDB(manifest.name, data, manifest);
+            },
+        }, {signal});
+        try {
+            const data = new Uint8Array(await file.arrayBuffer());
+            checkAborted(signal);
+            await installer.install(await inspect(data), data);
+            return `${StringTable.InstallSuccess} ${installer.added.join(', ')}`;
+        } catch (error) {
+            const message = signal.aborted ? StringTable.InstallCancelled : error instanceof Error ? error.message : String(error);
+            const partial = installer.added.length ? ` ${StringTable.AlreadySaved} ${installer.added.join(', ')}` : '';
+            throw new Error(message + partial);
         }
     }
 
@@ -1034,11 +1039,21 @@ export class Gui {
         return JSON.stringify(mod.bootJson, undefined, 2);
     }
 
+    private readonly patchedVersionNodes = new WeakMap<Element, HTMLSpanElement>();
+
     patchHtmlNodeVersionString(gameVersionDisplayNode: HTMLElement | Element | undefined | null) {
         if (!gameVersionDisplayNode) {
             return;
         }
-        gameVersionDisplayNode.innerHTML = `${gameVersionDisplayNode.innerHTML}-(ML${('-v' + this.gModUtils.version || '')})`;
+        const existing = this.patchedVersionNodes.get(gameVersionDisplayNode);
+        if (existing) {
+            if (existing.parentNode !== gameVersionDisplayNode) gameVersionDisplayNode.appendChild(existing);
+            return;
+        }
+        const marker = gameVersionDisplayNode.ownerDocument.createElement('span');
+        this.patchedVersionNodes.set(gameVersionDisplayNode, marker);
+        marker.textContent = `-(ML-v${this.gModUtils.version})`;
+        gameVersionDisplayNode.appendChild(marker);
         const clickCb = async (ev: MouseEvent | any) => {
             console.log(ev);
             if (this.gui && this.gui.isOpen) {
@@ -1049,15 +1064,7 @@ export class Gui {
                 this.gui && this.gui.open();
             }
         };
-        if ('onclick' in gameVersionDisplayNode) {
-            gameVersionDisplayNode.onclick = clickCb;
-        } else if ('addEventListener' in gameVersionDisplayNode) {
-            gameVersionDisplayNode.addEventListener('click', async (ev) => {
-                await clickCb(ev);
-            });
-        } else {
-            console.warn('patchHtmlNodeVersionString() (!gameVersionDisplayNode) cannot attach clickCb.');
-        }
+        gameVersionDisplayNode.addEventListener('click', clickCb);
     }
 
     patchVersionString() {

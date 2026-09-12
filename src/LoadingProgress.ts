@@ -3,7 +3,6 @@ import type {ModUtils} from "../../../dist-BeforeSC2/Utils";
 import type {LifeTimeCircleHook} from "../../../dist-BeforeSC2/ModLoadController";
 import moment from "moment";
 import {Subject} from 'rxjs';
-import {bufferTime, map} from 'rxjs/operators';
 
 export interface LogItem {
     time: moment.Moment;
@@ -23,29 +22,7 @@ export class LoadingProgress implements LifeTimeCircleHook {
         public gModUtils: ModUtils,
     ) {
         this.init();
-        this.logSubject.pipe(
-            map(T => {
-                this.logList.push(T);
-                return this.LogItem2Node(T);
-            }),
-            bufferTime(100),
-        ).subscribe({
-            next: (T) => {
-                if (this.logNode) {
-                    // use append mode
-                    this.logNode.append(...T);
-                }
-                // if (this.logNode) {
-                //     this.logNode.innerHTML = '';
-                //     this.logNode.append(...this.getLoadLogHtml());
-                // }
-            },
-            error: (e) => {
-                console.error('LoadingProgress logSubject error', e);
-            },
-            complete: () => {
-            },
-        });
+        this.logSubject.subscribe(item => this.record(item));
     }
 
     initOk = false;
@@ -61,7 +38,7 @@ export class LoadingProgress implements LifeTimeCircleHook {
         const oldLog = this.gSC2DataManager.getModLoadController().logRecordBeforeAnyLogHookRegister;
         // console.log('logRecordBeforeAnyLogHookRegister', oldLog);
         for (const T of oldLog) {
-            this.logList.push({
+            this.record({
                 str: T.message,
                 time: moment(T.time),
                 type: T.type,
@@ -82,13 +59,39 @@ export class LoadingProgress implements LifeTimeCircleHook {
     logNode?: HTMLDivElement;
 
     allStart() {
-        console.log('LoadingProgress allStart()');
+        this.overlayVisible = false;
+        if (this.flushTimer !== undefined) clearTimeout(this.flushTimer);
+        this.flushTimer = undefined;
         if (this.logNode) {
             this.logNode.style.display = 'none';
+            this.logNode.replaceChildren();
         }
     }
 
+    // Retain diagnostic history without growing for the entire game session.
+    static readonly maxRecords = 2000;
+    static readonly maxVisibleRecords = 300;
     logList: LogItem[] = [];
+    private droppedRecords = 0;
+    private overlayVisible = true;
+    private flushTimer?: ReturnType<typeof setTimeout>;
+    private readonly counts = {error: 0, warning: 0, info: 0};
+
+    private record(item: LogItem): void {
+        if (item.type) ++this.counts[item.type];
+        this.logList.push(item);
+        if (this.logList.length > LoadingProgress.maxRecords) {
+            this.logList.splice(0, this.logList.length - LoadingProgress.maxRecords);
+            ++this.droppedRecords;
+        }
+        if (!this.overlayVisible || this.flushTimer !== undefined) return;
+        this.flushTimer = setTimeout(() => {
+            this.flushTimer = undefined;
+            if (this.overlayVisible && this.logNode) {
+                this.logNode.replaceChildren(...this.logList.slice(-30).map(item => this.LogItem2Node(item)));
+            }
+        }, 100);
+    }
 
     logSubject = new Subject<LogItem>();
 
@@ -108,22 +111,9 @@ export class LoadingProgress implements LifeTimeCircleHook {
     }
 
     getLoadLogHtml(logShowConfig: LogShowConfig = new LogShowConfig()) {
-        const nnn = this.logList.reduce((a, T) => {
-            switch (T.type) {
-                case 'error':
-                    ++a[0];
-                    break;
-                case 'warning':
-                    ++a[1];
-                    break;
-                case 'info':
-                    ++a[2];
-                    break;
-            }
-            return a;
-        }, [0, 0, 0]);
+        const nnn = [this.counts.error, this.counts.warning, this.counts.info];
         const notice: LogItem = {
-            str: `【 ${nnn[0]} error, ${nnn[1]} warning, ${nnn[2]} info 】【${this.gModUtils.version}】`,
+            str: `【 ${nnn[0]} error, ${nnn[1]} warning, ${nnn[2]} info 】【${this.gModUtils.version}】【latest ${LoadingProgress.maxVisibleRecords}; ${this.droppedRecords} older records discarded】`,
             time: moment(),
         };
         if (nnn[0] > 0) {
@@ -138,16 +128,16 @@ export class LoadingProgress implements LifeTimeCircleHook {
                 return !((logShowConfig.noInfo && T.type === 'info')
                     || (logShowConfig.noWarning && T.type === 'warning')
                     || (logShowConfig.noError && T.type === 'error'));
-            }).map((T, i) => {
+            }).slice(-LoadingProgress.maxVisibleRecords).map((T, i) => {
                 return this.LogItem2Node(T);
             }),
         );
     }
 
     getLoadLog() {
-        return this.logList.map(T => {
+        return [`[History retains the latest ${LoadingProgress.maxRecords} records; ${this.droppedRecords} older records discarded.]`, ...this.logList.map(T => {
             return `[${T.time.format('HH:mm:ss.SSS')}][${T.type}] ${T.str}`;
-        });
+        })];
     }
 
     // update() {

@@ -49,6 +49,13 @@ const StringTableKeys = [
     'NoReadMeString',
 
     'InvalidFile',
+    'Installing',
+    'Downloading',
+    'Saving',
+    'CancelInstall',
+    'InstallSuccess',
+    'InstallCancelled',
+    'AlreadySaved',
 
 
     // used for ModSubUiAngularJsService.ts

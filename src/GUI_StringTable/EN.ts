@@ -46,6 +46,14 @@ export const StringTable_EN: StringTableType = {
 
     NoReadMeString: '<<No ReadMe>>',
 
+    Installing: 'Installing…',
+    Downloading: 'Downloading',
+    Saving: 'Saving',
+    CancelInstall: 'Cancel installation',
+    InstallSuccess: 'Installed. Reload to apply:',
+    InstallCancelled: 'Installation cancelled.',
+    AlreadySaved: 'Already saved:',
+
     InvalidFile: 'Invalid File',
 
     // used for ModSubUiAngularJsService.ts

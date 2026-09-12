@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 // const HtmlWebpackPlugin = require('html-webpack-plugin');
 
-const isProduction = process.env.NODE_ENV == 'production';
+const isProduction = process.env.NODE_ENV !== 'development';
 
 
 const stylesHandler = 'style-loader';
@@ -22,7 +22,7 @@ const config = {
     path: path.resolve(__dirname, 'dist'),
     filename: 'ModLoaderGui.js',
   },
-  devtool: 'inline-source-map',
+  devtool: isProduction ? false : 'source-map',
   target: 'web',
   // devServer: {
   //   open: true,
@@ -30,6 +30,8 @@ const config = {
   //   port: 3000,
   // },
   plugins: [
+    // GUI timestamps use fixed numeric formats; keep Moment's public value type without all locales.
+    new webpack.IgnorePlugin({resourceRegExp: /^\.\/locale$/, contextRegExp: /moment$/}),
     // new HtmlWebpackPlugin({
     //   template: 'src/web/1.html',
     // }),
@@ -82,7 +84,8 @@ const config = {
   },
   resolve: {
     extensions: ['.tsx', '.ts', '.jsx', '.js', '...'],
-    plugins: [new TsconfigPathsPlugin({
+    plugins: [
+new TsconfigPathsPlugin({
       configFile: 'src/tsconfig.json',
     })],
     alias: {

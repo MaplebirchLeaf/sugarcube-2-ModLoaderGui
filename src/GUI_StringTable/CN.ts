@@ -46,6 +46,14 @@ export const StringTable_CN: StringTableType = {
 
     NoReadMeString: '<<没有ReadMe>>',
 
+    Installing: '正在安装…',
+    Downloading: '正在下载',
+    Saving: '正在保存',
+    CancelInstall: '取消安装',
+    InstallSuccess: '安装成功，刷新后生效：',
+    InstallCancelled: '已取消安装。',
+    AlreadySaved: '已保存：',
+
     InvalidFile: '文件无效',
 
     // used for ModSubUiAngularJsService.ts
