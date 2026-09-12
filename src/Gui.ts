@@ -55,6 +55,14 @@ type ModBootJsonWithDownloadUrl = ModBootJson & {
     dependenceInfo?: DependenceInfoWithDownloadUrl[];
 };
 
+type NativeDownload = {
+    download(url: string): Promise<ArrayBuffer>;
+};
+
+type CordovaRuntime = {
+    require(moduleId: string): unknown;
+};
+
 function dependencyDownloadUrl(downloadUrl: string, proxyBaseUrl?: string): string {
     if (!proxyBaseUrl?.trim()) return downloadUrl;
 
@@ -780,6 +788,13 @@ export class Gui {
     protected async fetchDependencyArchive(d: DependenceInfoWithDownloadUrl) {
         if (!d.downloadUrl) throw new Error(`Dependency [${d.modName}] is missing and downloadUrl is empty.`);
         if (!this.thisWin.navigator.onLine) throw new Error(`Dependency [${d.modName}] is missing and browser is offline.`);
+        const transport = this.thisWin.document.querySelector<HTMLMetaElement>('meta[name="thalia-mod-download-transport"]')?.content;
+        if (transport === 'native') {
+            const cordova = (this.thisWin as Window & {cordova?: CordovaRuntime}).cordova;
+            if (!cordova) throw new Error(`Native downloader is unavailable for dependency [${d.modName}].`);
+            const downloader = cordova.require('thalia-native-download.NativeDownload') as NativeDownload;
+            return new Uint8Array(await downloader.download(d.downloadUrl));
+        }
         const proxyBaseUrl = this.thisWin.document.querySelector<HTMLMetaElement>('meta[name="thalia-mod-dependency-proxy"]')?.content;
         const url = dependencyDownloadUrl(d.downloadUrl, proxyBaseUrl);
         const response = await this.thisWin.fetch(url);
