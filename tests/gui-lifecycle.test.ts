@@ -4,6 +4,7 @@ import {resolve} from 'node:path';
 mock.module(resolve(import.meta.dir, '../src/GM.css?inlineText'), () => ({default: ''}));
 mock.module(resolve(import.meta.dir, '../node_modules/bootstrap/dist/css/bootstrap.css?inlineText'), () => ({default: ''}));
 const {Gui} = await import('../src/Gui');
+const {ModSubUiAngularJsService} = await import('../src/ModSubUiAngularJsService');
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
 afterEach(() => {
     if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
@@ -71,6 +72,28 @@ test('repeated GUI opens share one construction task', async () => {
     complete();
     await first;
     expect(gui.guiOpening).toBeUndefined();
+});
+
+test('legacy Mod Config renderer receives minification-safe AngularJS injection', () => {
+    const service = Object.create(ModSubUiAngularJsService.prototype) as any;
+    let registered: unknown;
+    const originalDirective = function (_name: string, factory: unknown) {
+        registered = factory;
+    };
+    const module = {directive: originalDirective};
+    const originalModule = function () { return module; };
+    const angular = {module: originalModule};
+    const factory = function (minifiedCompileName: unknown) { return minifiedCompileName; };
+    const ref = {
+        getNg: () => angular,
+        bootstrapModGuiConfig: () => angular.module('ModGuiConfig', []).directive('dynamicComponent', factory),
+    };
+
+    service.bootstrapModGuiConfig(ref, {});
+
+    expect(registered).toEqual(['$compile', factory]);
+    expect(angular.module).toBe(originalModule);
+    expect(module.directive).toBe(originalDirective);
 });
 
 test('version decoration is idempotent and preserves existing children and listeners', () => {

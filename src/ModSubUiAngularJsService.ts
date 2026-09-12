@@ -4,6 +4,20 @@ import type {
 } from '../../ModSubUiAngularJs/dist-ts/ModSubUiAngularJsModeExportInterface';
 import {ModSubUiAngularJsServiceLifeTimeCallback} from "./ModSubUiAngularJsServiceInterface";
 
+type AngularDirectiveFactory = ((...args: any[]) => any) | readonly unknown[];
+
+interface AngularModuleLike {
+    directive(name: string, factory: AngularDirectiveFactory): unknown;
+}
+
+interface AngularStaticLike {
+    module(name: string, requires?: readonly string[], configFn?: unknown): AngularModuleLike;
+}
+
+type CompatibleModSubUi = ModSubUiAngularJsModeExportInterface & {
+    getNg?: () => AngularStaticLike;
+};
+
 
 export class ModSubUiAngularJsService {
 
@@ -37,16 +51,49 @@ export class ModSubUiAngularJsService {
     }
 
     async bootstrap(el: HTMLElement) {
-        if (!this.Ref) {
+        const ref = this.Ref;
+        if (!ref) {
             // ignore
             return;
         }
-        this.Ref.installBuildInComponent();
+        ref.installBuildInComponent();
         for (const c of this.lifeTimeCallbackTable.values()) {
-            c.whenCreate && await c.whenCreate(this.Ref);
+            c.whenCreate && await c.whenCreate(ref);
         }
-        console.log('bootstrapModGuiConfig', [el, this.Ref, this.Ref.appContainerManager]);
-        this.Ref.bootstrapModGuiConfig(el);
+        console.log('bootstrapModGuiConfig', [el, ref, ref.appContainerManager]);
+        this.bootstrapModGuiConfig(ref, el);
+    }
+
+    /** Keeps the legacy renderer working when its directive factory is minified. */
+    private bootstrapModGuiConfig(ref: ModSubUiAngularJsModeExportInterface, el: HTMLElement): void {
+        const angular = (ref as CompatibleModSubUi).getNg?.();
+        if (!angular) {
+            ref.bootstrapModGuiConfig(el);
+            return;
+        }
+
+        const originalModule = angular.module;
+        const restoreDirectives: (() => void)[] = [];
+        angular.module = function (name: string, requires?: readonly string[], configFn?: unknown) {
+            const module = originalModule.call(this, name, requires, configFn);
+            if (name !== 'ModGuiConfig' || !requires) return module;
+
+            const originalDirective = module.directive;
+            module.directive = function (directiveName: string, factory: AngularDirectiveFactory) {
+                const compatibleFactory = directiveName === 'dynamicComponent' && typeof factory === 'function'
+                    ? ['$compile', factory]
+                    : factory;
+                return originalDirective.call(this, directiveName, compatibleFactory);
+            };
+            restoreDirectives.push(() => { module.directive = originalDirective; });
+            return module;
+        };
+        try {
+            ref.bootstrapModGuiConfig(el);
+        } finally {
+            for (const restore of restoreDirectives) restore();
+            angular.module = originalModule;
+        }
     }
 
     async release() {
@@ -62,4 +109,3 @@ export class ModSubUiAngularJsService {
     }
 
 }
-
