@@ -16,7 +16,7 @@ test('concurrent install calls share one operation and cancellation signal', asy
     let calls = 0;
     let signal: AbortSignal | undefined;
     let complete!: (value: string) => void;
-    gui.installFile = (_: unknown, currentSignal: AbortSignal) => {
+    gui.installFiles = (_: unknown, currentSignal: AbortSignal) => {
         ++calls;
         signal = currentSignal;
         return new Promise<string>(resolve => { complete = resolve; });
@@ -119,4 +119,39 @@ test('version decoration is idempotent and preserves existing children and liste
     expect(children).toHaveLength(2);
     expect(children[1]).toBe(marker);
     expect(handlers).toBe(2);
+});
+
+
+test('multiple selected files install sequentially and retain partial success', async () => {
+    const gui = Object.create(Gui.prototype) as any;
+    const files = [{name: 'A.zip'}, {name: 'B.zip'}, {name: 'C.zip'}];
+    const calls: string[] = [];
+    let active = 0;
+    gui.installFile = async (file: {name: string}) => {
+        expect(active).toBe(0);
+        active++;
+        calls.push(file.name);
+        await Promise.resolve();
+        active--;
+        if (file.name === 'B.zip') throw new Error('invalid archive');
+        return `installed ${file.name}`;
+    };
+    const result = await gui.installFiles({files}, new AbortController().signal);
+    expect(calls).toEqual(['A.zip', 'B.zip', 'C.zip']);
+    expect(result).toContain('installed A.zip');
+    expect(result).toContain('installed C.zip');
+    expect(result).toContain('B.zip: invalid archive');
+});
+
+test('cancelling a multi-file import stops before subsequent files', async () => {
+    const gui = Object.create(Gui.prototype) as any;
+    const abort = new AbortController();
+    const calls: string[] = [];
+    gui.installFile = async (file: {name: string}) => {
+        calls.push(file.name);
+        abort.abort();
+        throw new Error('cancelled');
+    };
+    await expect(gui.installFiles({files: [{name: 'A.zip'}, {name: 'B.zip'}]}, abort.signal)).rejects.toThrow('cancelled');
+    expect(calls).toEqual(['A.zip']);
 });

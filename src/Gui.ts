@@ -304,6 +304,11 @@ export class Gui {
                     label: StringTable.SelectModZipFile,
                     type: 'file',
                     cssClassName: 'd-inline',
+                    afterToNode: (node) => {
+                        const input = node as HTMLInputElement;
+                        input.multiple = true;
+                        input.accept = '.zip';
+                    },
                 },
                 'AddMod_b': {
                     label: StringTable.AddMod,
@@ -829,16 +834,34 @@ export class Gui {
     loadAndAddMod(htmlFile: HTMLInputElement): Promise<string> {
         if (this.installation) return this.installation;
         this.installationAbort = new AbortController();
-        this.installation = this.installFile(htmlFile, this.installationAbort.signal).finally(() => {
+        this.installation = this.installFiles(htmlFile, this.installationAbort.signal).finally(() => {
             this.installation = undefined;
             this.installationAbort = undefined;
         });
         return this.installation;
     }
 
-    private async installFile(htmlFile: HTMLInputElement, signal: AbortSignal): Promise<string> {
-        const file = htmlFile.files?.length === 1 ? htmlFile.files[0] : undefined;
-        if (!file) throw new Error(StringTable.InvalidFile);
+    private async installFiles(htmlFile: HTMLInputElement, signal: AbortSignal): Promise<string> {
+        const files = Array.from(htmlFile.files || []);
+        if (!files.length) throw new Error(StringTable.InvalidFile);
+        const success: string[] = [];
+        const failures: string[] = [];
+        // IndexedDB mod-list updates must remain sequential.
+        for (const file of files) {
+            checkAborted(signal);
+            try {
+                success.push(await this.installFile(file, signal));
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                if (signal.aborted) throw new Error([...success, message].join(' | '));
+                failures.push(`${file.name}: ${message}`);
+            }
+        }
+        if (!success.length) throw new Error(failures.join('; '));
+        return [...success, ...failures].join(' | ');
+    }
+
+    private async installFile(file: File, signal: AbortSignal): Promise<string> {
         if (file.size > MAX_ARCHIVE_BYTES) throw new Error('Mod archive exceeds 128 MiB.');
         const controller = this.gModUtils.getModLoadController();
         if (typeof controller.getStoredModInfoIndexDB !== 'function') {
