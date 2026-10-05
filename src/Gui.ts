@@ -307,7 +307,7 @@ export class Gui {
                     afterToNode: (node) => {
                         const input = node as HTMLInputElement;
                         input.multiple = true;
-                        input.accept = '.zip';
+                        input.accept = '.zip,.modpack,.modpack.crypt';
                     },
                 },
                 'AddMod_b': {
