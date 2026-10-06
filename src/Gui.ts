@@ -1072,6 +1072,8 @@ export class Gui {
             return;
         }
         const existing = this.patchedVersionNodes.get(gameVersionDisplayNode);
+        const trailing = existing?.parentNode === gameVersionDisplayNode ? existing.previousSibling : gameVersionDisplayNode.lastChild;
+        if (trailing?.nodeType === 3) trailing.textContent = trailing.textContent?.trimEnd() ?? '';
         if (existing) {
             if (existing.parentNode !== gameVersionDisplayNode) gameVersionDisplayNode.appendChild(existing);
             return;

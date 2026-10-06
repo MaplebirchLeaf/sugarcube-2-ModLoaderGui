@@ -101,10 +101,11 @@ test('version decoration is idempotent and preserves existing children and liste
     gui.patchedVersionNodes = new WeakMap();
     gui.gModUtils = {version: 'test'};
     let handlers = 1;
-    const original = {textContent: 'original'};
+    const original = {nodeType: 3, textContent: '0.5.12.13\n\t'};
     const children: any[] = [original];
     const node = {
-        ownerDocument: {createElement: () => ({textContent: '', parentNode: undefined})},
+        get lastChild() { return children.at(-1); },
+        ownerDocument: {createElement: () => ({textContent: '', parentNode: undefined, get previousSibling() { return children[children.indexOf(this) - 1]; }})},
         appendChild: (child: any) => { children.push(child); child.parentNode = node; },
         addEventListener: () => { ++handlers; },
     };
@@ -112,10 +113,13 @@ test('version decoration is idempotent and preserves existing children and liste
     gui.patchHtmlNodeVersionString(node);
     expect(children).toHaveLength(2);
     expect(children[0]).toBe(original);
+    expect(children.map(child => child.textContent).join('')).toBe('0.5.12.13-(ML-vtest)');
     expect(handlers).toBe(2);
     const marker = children.pop();
     marker.parentNode = undefined;
+    original.textContent += '\n\t';
     gui.patchHtmlNodeVersionString(node);
+    expect(original.textContent).toBe('0.5.12.13');
     expect(children).toHaveLength(2);
     expect(children[1]).toBe(marker);
     expect(handlers).toBe(2);
